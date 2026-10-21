@@ -1,0 +1,53 @@
+{
+  "id": "chat-archive-sync",
+  "name": "聊天记录发布（GitHub / 本地目录）",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "把「存档」里的某一段聊天记录发布出去，或者把发出去的读回来覆盖本地存档。主人说「发布」就把指定存档传上去，说「读取」就把远端那份拉回来覆盖本地——按 chatKey 分成一个文件，不同存档互不混淆（私聊 123 和群 123 是两个文件）。**没填 GitHub 配置时默认存到本机目录**（默认 <数据目录>/archive-sync/），填了 token + 仓库才走 GitHub。",
+  "author": "本机自建（按你的需求生成）",
+  "entry": "index.js",
+  "enabledByDefault": true,
+  "capabilities": [],
+  "requires": [],
+  "settings": {
+    "token": "",
+    "repo": "",
+    "branch": "main",
+    "pathPrefix": "archives",
+    "localDir": "",
+    "includeSelf": true
+  },
+  "configSchema": {
+    "token": {
+      "type": "string",
+      "label": "GitHub Token（留空 = 存本地目录）",
+      "description": "有 repo + token 才会往 GitHub 传。留空就只写到下面那个本地目录里，完全不联网。token 需要 repo 权限（fine-grained 选 Contents: Read and write）。"
+    },
+    "repo": {
+      "type": "string",
+      "label": "仓库（owner/repo）",
+      "description": "例如 wxzjss/qq-chat-archives。只在填了 token 时生效。"
+    },
+    "branch": {
+      "type": "string",
+      "label": "分支",
+      "description": "默认 main。"
+    },
+    "pathPrefix": {
+      "type": "string",
+      "label": "仓库里的目录前缀",
+      "description": "存档文件放在仓库哪个目录下，默认 archives。每个存档一个文件：archives/<chatKey 转义>.json。"
+    },
+    "localDir": {
+      "type": "string",
+      "label": "本地目录（留空 = 数据目录/archive-sync）",
+      "description": "没配 GitHub、或想同时留一份在本机时用。留空就是 <QQ Agent 数据目录>/archive-sync。"
+    },
+    "includeSelf": {
+      "type": "boolean",
+      "label": "发布时包含机器人自己的发言",
+      "description": "开着（默认）：整段对话都发。关掉只发别人说的话（她自己的发言还是不会传出去）。"
+    }
+  }
+}
