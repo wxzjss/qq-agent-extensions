@@ -29,8 +29,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { DATA_DIR } from '../../src/config.js';
+import { DATA_DIR, getConfig } from '../../src/config.js';
 import { webSearch, webFetch, bingSearch } from '../../src/web-search.js';
+import { resolveApiKey } from '../../src/llm.js';
 
 const SKILL_ID = 'autopilot';
 const DIR = path.join(DATA_DIR, SKILL_ID);
@@ -838,6 +839,145 @@ export function setup(api) {
     }
   });
 
+  // ══ 故障门诊：不管缺什么能力，先跑这一套 ═══════════════════════════════
+  // 存在的理由（主人 2026-10-22 说的）：不许每出一种"缺某能力"，就由人补一次。
+  // 所以把"自己排查"做成一个与具体能力无关的工具：网络 / 运行时 / 权限 / 磁盘 / 配置 /
+  // 最近的失败记录，一把全查，然后告诉她"哪条不通、该换哪条路"。
+  api.registerTool({
+    id: 'troubleshoot',
+    name: '故障门诊（缺能力时先跑这个）',
+    description:
+      '任何工具连续失败、或者你觉得"这件事少个东西做不了"时，先跑它。'
+      + '它会一次性检查：外网连通（DNS/HTTPS 到多个站点）、本机运行时（node/python/git/curl/powershell）、'
+      + '目录可写性（数据目录、skills、plugins）、关键配置（模型/搜索/权限）、以及最近几条失败审计。'
+      + '返回一份"哪条路通、哪条不通、下一步该试什么"的清单 —— 按它去做，别原样重试，也别直接回主人说做不到。',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', description: '可选：你原本想完成什么（写清楚更容易给对建议）。' }
+      },
+      required: []
+    },
+    category: 'system',
+    icon: '🩺',
+    async execute(ctx, args) {
+      const g = gate(ctx, 'troubleshoot', {});
+      if (!g.ok) return { content: g.content, isError: true };
+      const c = cfg();
+      const goal = String((args && args.goal) || '').trim();
+      const lines = [];
+      const facts = { net: {}, bins: {}, dirs: {}, cfg: {}, fails: [] };
+
+      // ① 外网：DNS + HTTPS（并发，单点 6 秒超时）
+      const probes = [
+        ['bing', 'https://cn.bing.com/'],
+        ['baidu', 'https://www.baidu.com/'],
+        ['github-api', 'https://api.github.com/'],
+        ['npm', 'https://registry.npmjs.org/']
+      ];
+      await Promise.all(probes.map(async ([name, url]) => {
+        const started = Date.now();
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 6000);
+          const res = await fetch(url, { method: 'HEAD', signal: ctrl.signal, redirect: 'manual' }).finally(() => clearTimeout(timer));
+          facts.net[name] = { ok: true, status: res.status, ms: Date.now() - started };
+        } catch (e) {
+          facts.net[name] = { ok: false, error: String(e?.name === 'AbortError' ? '超时 6s' : (e?.message ?? e)) };
+        }
+      }));
+      const netOk = Object.values(facts.net).filter((x) => x.ok).length;
+      lines.push(`【外网】${netOk}/${probes.length} 个站点可达`);
+      for (const [k, v] of Object.entries(facts.net)) {
+        lines.push(`  · ${k}: ${v.ok ? `通（HTTP ${v.status}, ${v.ms}ms）` : `不通（${v.error}）`}`);
+      }
+
+      // ② 运行时：命令在不在、版本多少
+      const bins = [
+        ['node', ['-v']], ['npm', ['-v']], ['python', ['--version']],
+        ['git', ['--version']], ['curl', ['--version']], ['powershell', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']]
+      ];
+      await Promise.all(bins.map(async ([name, argv]) => {
+        facts.bins[name] = await new Promise((resolve) => {
+          let out = '';
+          let child;
+          try {
+            const isWinNpm = process.platform === 'win32' && name === 'npm';
+          const exe = isWinNpm ? 'cmd.exe' : name;
+          const realArgv = isWinNpm ? ['/c', 'npm', ...argv] : argv;
+          child = spawn(exe, realArgv, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+          } catch (e) { return resolve({ ok: false, error: String(e?.message ?? e) }); }
+          const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } }, 4000);
+          child.stdout.on('data', (d) => { if (out.length < 200) out += d.toString(); });
+          child.stderr.on('data', (d) => { if (out.length < 200) out += d.toString(); });
+          child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: String(e?.message ?? e) }); });
+          child.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, version: out.trim().split('\n')[0] || '' }); });
+        });
+      }));
+      lines.push('【运行时】');
+      for (const [k, v] of Object.entries(facts.bins)) {
+        lines.push(`  · ${k}: ${v.ok ? (v.version || '可用') : `没有/不可用（${v.error || '退出码非 0'}）`}`);
+      }
+
+      // ③ 目录可写
+      const appRoot = path.resolve(HERE, '..', '..');
+      for (const [label, dir] of [['数据目录', DIR], ['skills', path.join(appRoot, 'skills')], ['plugins', path.join(appRoot, 'plugins')]]) {
+        let ok = false; let err = '';
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+          const probe = path.join(dir, `.write-test-${Date.now()}`);
+          fs.writeFileSync(probe, 'ok', 'utf8');
+          fs.unlinkSync(probe);
+          ok = true;
+        } catch (e) { err = String(e?.message ?? e); }
+        facts.dirs[label] = { ok, path: dir, error: err };
+        lines.push(`【${label}】${ok ? '可写' : `不可写（${err}）`} — ${dir}`);
+      }
+
+      // ④ 关键配置（只说有没有，不打印密钥）
+      const hasModel = Boolean(String(getConfig().api?.model || '').trim());
+      const cfgNow = getConfig();
+      let hasKey = false;
+      try { hasKey = Boolean(String(resolveApiKey(cfgNow) || '').trim()); } catch { hasKey = Boolean(String(cfgNow.api?.apiKey || '').trim()); }
+      const searchProvider = String(getConfig().webSearch?.provider || 'bing');
+      facts.cfg = { hasModel, hasKey, searchProvider, fullAccess: c.fullAccess !== false, computerUse: c.computerUse !== false };
+      lines.push(`【配置】模型 ${hasModel ? '已设' : '未设'}｜主渠道 Key ${hasKey ? '已设' : '未设'}｜搜索服务 ${searchProvider}｜完全权限 ${facts.cfg.fullAccess ? '开' : '关'}｜电脑操作 ${facts.cfg.computerUse ? '开' : '关'}`);
+
+      // ⑤ 最近失败（只在审计里找带 error 的）
+      try {
+        const raw = fs.existsSync(AUDIT_FILE) ? fs.readFileSync(AUDIT_FILE, 'utf8').trim().split('\n') : [];
+        const fails = raw.slice(-200).map((l) => { try { return JSON.parse(l); } catch { return null; } })
+          .filter((x) => x && (x.error || /失败|拒绝/.test(String(x.content || '')))).slice(-5);
+        facts.fails = fails;
+        if (fails.length) {
+          lines.push('【最近失败】');
+          for (const f of fails) {
+            lines.push(`  · ${f.at || ''} ${f.tool || '?'}：${String(f.error || f.content || '').slice(0, 120)}`);
+          }
+        }
+      } catch { /* 审计读不到就算了 */ }
+
+      // ⑥ 给结论：按"不通的那条"给替代路径
+      const advice = [];
+      if (netOk === 0) {
+        advice.push('外网全不通：先确认是不是代理/DNS 问题（run 里试 nslookup）→ 需要代理就设 HTTPS_PROXY 再试 → 仍不通就只能用本机已有数据，别硬等网络');
+      } else if (netOk < probes.length) {
+        advice.push(`部分站点不通（通了 ${netOk} 个）：换能通的那个源去取同样的东西（比如 bing 不通就试 baidu / api.github.com）`);
+      }
+      if (!facts.bins.node.ok) advice.push('node 不可用：改用 python 或 powershell 实现同样的脚本');
+      if (!facts.bins.git.ok && goal) advice.push('没有 git：要拉代码就直接下 zip（fetch 二进制不行就用 run 里的 curl）');
+      if (!facts.dirs.skills.ok) advice.push('skills/ 不可写：这次只能在本机临时脚本里实现，别硬往技能目录写');
+      if (!hasKey) advice.push('主渠道 Key 没配：先问主人，不要自己编');
+      if (!advice.length) advice.push('各项都通 —— 那问题不在环境，而在"这条路本身"：换接口/换解析方式/自己写替代实现，仍然不许空手回去');
+      advice.push('做完之后：能复用的做法写成 skills/ 或 plugins/，下次不用再排查一遍。');
+
+      audit({ tool: 'troubleshoot', caller: g.caller.id, goal: goal.slice(0, 120), netOk, ok: true });
+      return {
+        content: `${goal ? `目标：${goal}\n` : ''}${lines.join('\n')}\n\n【下一步】\n${advice.map((x, i) => `${i + 1}. ${x}`).join('\n')}`
+      };
+    }
+  });
+
   // ══ 电脑操作（Computer Use）：截图 / 鼠标 / 键盘 / 窗口 ═══════════════
   // 参考 dsh-orb 的 GUI 工具思路：先看（screen）→ 再动（mouse/keyboard）→ 再回看确认。
   // 一律走 gate()：只有主人私聊放行；conservative 模式下（fullAccess=false）不动手。
@@ -1317,11 +1457,12 @@ const DOCTRINE = [
   '① 先找现成的：系统命令、包管理器（npm/pnpm/pip/winget）、官方下载源、本机已装的软件；',
   '② 再想办法替代：能拆成几步就拆、能写脚本就别手动、能调外部命令行就别等插件；',
   '③ 实在没有就自己造：write 一个 .js/.py 存盘再 run；还缺能力就给自己做新技能（skills/）或插件（plugins/）补上，做完再继续把主人的事办完；',
-  '③′ 工具报错 ≠ 这条路断了（2026-10-22 主人点名要的）：search/fetch/某个接口一报错，先走「能力缺口四步」——',
-  '   a) 说清缺什么：网络不通？解析失败？缺 key？缺命令？',
-  '   b) 用 run 现场试替代路径：curl / Invoke-WebRequest / nslookup / 换镜像源 / 换公开 API / 直接抓 HTML 自己解析；',
-  '   c) 试通了就接着把活干完，不许停在"这个工具不可用"；',
+  '③′ 能力缺口通用流程（2026-10-22 主人要求，适用于任何缺东西的情况，不只是联网）：',
+  '   a) 同一个工具连续失败 2 次，立刻调用 troubleshoot（故障门诊），把目标写进去，让它查网络/运行时/权限/配置/最近失败；',
+  '   b) 按它的【下一步】去做：换源、换命令、换实现、绕过、降级 —— 不许原样重试第三次，也不许直接回主人"做不到"；',
+  '   c) 换条路做成了，就接着把活干完；',
   '   d) 这套做法值得复用，就写成 skills/ 里的新技能或 plugins/ 里的新插件留档，下次直接用。',
+  '   ⚠️ 缺的可能是：联网、某个命令、某个软件、磁盘权限、API Key、算力、格式解析 —— 一律先门诊再动手，别等着人来补。',
   '④ 报"做不到"之前必须真的试过至少一次。唯一允许收手的情况：会删主人数据/越权对外发布/明显伤害主人 —— 那时要说清卡在哪、给替代方案，而不是空手回来。'
 ].join('\n');
 
