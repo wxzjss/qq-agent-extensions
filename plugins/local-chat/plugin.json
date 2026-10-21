@@ -1,0 +1,25 @@
+{
+  "id": "local-chat",
+  "name": "本地聊天（在软件里直接和她说话）",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "不用打开 QQ，直接在控制台里跟同一个她聊天。开启后左侧会多出「聊天」页签，消息走的是和 QQ 完全相同的链路（入库 → 编排器判定 → 模型 → send_message 工具），所以人设、记忆、插件、工具全都沿用，聊出来的内容也会进存档。唯一的区别是发送端：会话 key 是 local:console，sender 看到这个前缀就把回复写回本地库里给界面渲染，不会发到 QQ。关掉插件，页签和接口一起消失，聊天记录仍留在存档里。",
+  "author": "小鱼",
+  "entry": "index.js",
+  "enabledByDefault": true,
+  "capabilities": [
+    "console.chat.meta"
+  ],
+  "requires": [],
+  "settings": {
+    "title": "聊天"
+  },
+  "configSchema": {
+    "title": {
+      "type": "string",
+      "label": "页签名称",
+      "description": "控制台里那个页签显示成什么。默认「聊天」，想叫「和她说说话」也行。留空按默认处理。"
+    }
+  }
+}
