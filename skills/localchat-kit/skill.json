@@ -1,0 +1,22 @@
+{
+  "id": "localchat-kit",
+  "name": "本地聊天安装包（她给自己装功能）",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "把「本地聊天」这套能力做成可安装的补丁包：装上这个技能后，让她用 localchat_install 把聊天页功能写进宿主代码（备份原件、可一键还原）。原来这些改动只能靠人改代码，没法随包发布；现在整包自带补丁，她自己动手就能装。注意：改的是宿主源码，装完必须重启 QQ Agent。",
+  "author": "小鱼",
+  "entry": "index.js",
+  "enabledByDefault": true,
+  "permissions": [],
+  "settings": {
+    "appDir": ""
+  },
+  "configSchema": {
+    "appDir": {
+      "type": "string",
+      "label": "QQ Agent 安装目录（留空 = 自动按本技能所在位置推断）",
+      "description": "一般不用填。技能装在 <安装目录>/skills/localchat-kit 时，自动往上两级就是安装目录。只有在非常规布局下才需要手动指定，例如 C:\\Users\\你\\AppData\\Local\\Programs\\QQ Agent\\resources\\app。"
+    }
+  }
+}
