@@ -11,6 +11,7 @@
 | `plugins/reply-safety-plus` | 插件 | 回复安全网：她把话写在正文里却忘了调 `send_message` 时把成品话抢救出去 |
 | `plugins/hide-clear-archive` | 插件 | 把存档页那个「清空存档」按钮藏起来（只隐藏不删元素，关插件即恢复） |
 | `plugins/chat-archive-sync` | 插件 | 聊天记录发布：说「发布」上传某段存档、说「读取」拉回来覆盖本地；未配置 GitHub 时走本机目录 |
+| `plugins/ext-remover` | 插件 | **技能/插件删除按钮(修复版)**：给技能/插件卡片装一颗 🗑，目录移进备份区（不硬删）；补上了 runAction 动作通路 |
 
 ## 为什么有 localchat-kit 这种"改代码"的技能
 
