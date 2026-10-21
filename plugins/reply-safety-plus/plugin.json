@@ -1,0 +1,64 @@
+{
+  "id": "reply-safety-plus",
+  "name": "回复安全网 Plus（正文抢救）",
+  "version": "1.2.0",
+  "apiVersion": 1,
+  "category": "message",
+  "description": "治「她明明想了、却什么都没发」这个毛病。按程序设定，她的正文只是思考、不会发到 QQ，要发言必须调用 send_message；但模型偶尔会把要说的话直接写在正文里却忘了调用工具——群友就什么都收不到。本机实测：143 次运行里有 43 次（约三成）是这种「写了话、一条都没发」。核心其实早就写好了抢救逻辑，只是缺一个提供实现的插件，所以一直是空转。本插件补上这一步，并把正文原样搬出去。默认开启「全发模式」：正文里写了什么就发什么，括号里的内心戏、自我嘀咕、比较备选说法都不再拦（只滤掉工具调用语法这类机器噪音）。关掉全发模式则回到保守判定：只发「成品话」、拿不准一律沉默。发送仍走核心的发送队列，限频/去重/留档一个都不绕。（本条目 id 为 reply-safety-plus，与市场上同名早期版本区分；功能一致并含后续修补。）",
+  "author": "小鱼",
+  "entry": "index.js",
+  "enabledByDefault": true,
+  "capabilities": [
+    "reply.is-planning-text",
+    "reply.loose-send",
+    "reply.salvage-lines",
+    "reply.grounded-select"
+  ],
+  "requires": [],
+  "settings": {
+    "sendAll": true,
+    "dryRun": false,
+    "useLooseSend": true,
+    "groundCheck": true,
+    "maxMessages": 3,
+    "judgeModel": "",
+    "judgeProvider": ""
+  },
+  "configSchema": {
+    "sendAll": {
+      "type": "boolean",
+      "label": "全发模式（想到什么发什么）",
+      "description": "默认开启。开启后正文里写了什么就原样发什么：括号里的内心戏（（轻颤）…）、自我嘀咕、比较备选说法（备选一/备选二）全部照发，不再被拦。只滤掉两类机器噪音：工具调用语法（<tool_call>…、{\"messages\":…}）和「我调用了xx工具」这种汇报腔——那不是想到的话，发出去只是一串看不懂的符号。一次最多发 12 行，防止一条长思考刷成几十条消息。\n关闭后恢复保守判定：只发像「成品话」的句子，拿不准一律不发（把内心戏发进群，比这轮不说话严重得多）。"
+    },
+    "dryRun": {
+      "type": "boolean",
+      "label": "演练模式（只记日志，不真发）",
+      "description": "打开后照样判定、照样挑句子，但只把「本来想发什么」写进程序控制台，不真的发到 QQ。想先看看会发出去什么就用它。"
+    },
+    "useLooseSend": {
+      "type": "boolean",
+      "label": "正则级抢救（免费、不花模型调用）",
+      "description": "默认开启。不开全发模式时：整段都干净就直接原样搬出去，省一次模型调用；关掉后每一条都交给裁判模型判（更保守、也稍贵）。全发模式下这一项不起作用。"
+    },
+    "groundCheck": {
+      "type": "boolean",
+      "label": "草稿溯源（只发她自己写过的原句）",
+      "description": "默认开启。最后一道闸：挑出来的句子必须能在她自己的草稿里原样找到、且没发过，否则丢弃。全发模式下自动停用（句子本就是正文原样搬的，没有编造风险）。"
+    },
+    "maxMessages": {
+      "type": "number",
+      "label": "保守模式下一次最多救回几条",
+      "description": "默认 3，可填 1~6。她本来就是短句分条发，救太多会显得刷屏。全发模式不使用这一项（改为上限 12 行）。"
+    },
+    "judgeModel": {
+      "type": "string",
+      "label": "裁判专用模型（留空 = 用聊天主模型）",
+      "description": "只在关闭全发模式后用于判「成品话 vs 内心戏」。强烈建议填一个能关思考的小模型。留空则沿用聊天主模型。"
+    },
+    "judgeProvider": {
+      "type": "string",
+      "label": "裁判模型所属渠道 ID",
+      "description": "填了 judgeModel 又想用另一个渠道的地址/Key 时，填模型目录里的渠道 id。留空则沿用主渠道。"
+    }
+  }
+}
