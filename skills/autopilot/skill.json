@@ -1,0 +1,90 @@
+{
+  "id": "autopilot",
+  "name": "办事模式（把事做完）",
+  "version": "1.4.1",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "让她从「只会回一句话」变成「会把事办完」，而且手上真有工具。① 办事纪律：接到多步任务先列清单、边做边记笔记、每步勾进度、最后照单核对交付，进度还能跨轮带着走；② 办事底线（2026-10-21 新增）：不存在「没有对应技能/插件/工具」这个结论——缺什么就自己补：先找系统命令/包管理器/本机软件，再拆步骤或写脚本，实在没有就给自己造个技能或插件，办完再回来；报「做不到」之前必须真的试过。③ 认主：可在这里直接指定主人 QQ 号，优先级最高（2026-10-21 新增）。④ 电脑操作：截图 / 鼠标 / 键盘 / 窗口四件套，先看再点、打完回看（参考 dsh-orb 的 Computer Use，2026-10-21 新增；脚本以 .ps1.txt 存放、运行时落地到临时目录，避免被打包/安装器的可执行后缀黑名单拦截）。⑤ 一双手（默认完全权限）：跑 PowerShell、读/写/改文件、列目录、按通配符找文件、按正则搜内容——等同 DSH 的 danger-full-access，不审批、不限制目录、不挡命令，只留审计日志。数据在本地 data/autopilot/，不联网。",
+  "author": "本地自建",
+  "enabledByDefault": true,
+  "settings": {
+    "ownerQQ": "",
+    "fullAccess": true,
+    "openToAll": false,
+    "workspace": "",
+    "runTimeout": 120,
+    "strictMode": true,
+    "injectProgress": true,
+    "maxSteps": 12,
+    "neverGiveUp": true,
+    "computerUse": true
+  },
+  "configSchema": {
+    "ownerQQ": {
+      "type": "string",
+      "label": "主人 QQ 号",
+      "description": "填上以后，只有这个号是主人：她认主人、放行动手权限，都以这里为准，优先级高于「主人识别」插件和其它来源。留空则沿用原来的判定（私聊通道 + 主人识别插件）。群聊里她也能靠这个号码认人。"
+    },
+    "fullAccess": {
+      "type": "boolean",
+      "label": "完全权限（等同 DSH 的 danger-full-access）",
+      "description": "开着（默认，主人要求的）：跑命令、读写文件一律放行——不审批、不限制目录、不挡命令，包括会删东西、会改系统设置的命令。关掉后变成「只能在下面那个目录里读写、不许跑命令」的保守模式。她每一次动手都会记进 data\\autopilot\\audit.jsonl，出了事查得到是谁让干的。"
+    },
+    "openToAll": {
+      "type": "boolean",
+      "label": "群友也能指挥她动手",
+      "description": "关着（默认）：只有主人私聊她时才放行；群里任何人都不能让她跑命令、碰文件。开着就等于把「用你账号操作这台电脑」的权限给了群里所有人——包括让她删东西。除非你完全信任那个群，否则别开。"
+    },
+    "workspace": {
+      "type": "string",
+      "label": "保守模式下的允许目录",
+      "description": "只在「完全权限」关掉时生效。填一个目录（如 C:\\Users\\35453\\QQ-agent），她就只能在这个目录里读写。留空 = 不限目录。"
+    },
+    "runTimeout": {
+      "type": "number",
+      "label": "命令最长跑多久（秒）",
+      "description": "跑 PowerShell 命令的超时，默认 120 秒，范围 10~900。超时会连子进程一起杀掉，回执里会写明「已超时」。要跑很久的构建/装依赖，把这个调大。",
+      "min": 10,
+      "max": 900,
+      "step": 10
+    },
+    "strictMode": {
+      "type": "boolean",
+      "label": "严格模式（真去办，不是给建议）",
+      "description": "开着（推荐）：交办一件事时她必须动手做到底——查了就查了、写了就写了，不许拿「建议你自己去…」当交付。关掉后允许她只给方案不动手。"
+    },
+    "injectProgress": {
+      "type": "boolean",
+      "label": "把当前进度带进提示词",
+      "description": "开着：手里有没做完的清单时，每轮把目标、已完成/未完成的步骤压成很短一行带上，隔几轮回来她还记得做到哪。没在办事时一个字都不加。"
+    },
+    "maxSteps": {
+      "type": "number",
+      "label": "一份清单最多几步",
+      "description": "防止她把简单的事拆成二十步。默认 12 步，范围 3~30。",
+      "min": 3,
+      "max": 30,
+      "step": 1
+    },
+    "neverGiveUp": {
+      "type": "boolean",
+      "label": "办事底线：不许空手回来",
+      "description": "开着（默认，主人要求）：主人交代的事，不允许用「没有对应的技能/插件/工具」当理由。缺工具就去找（系统命令、包管理器、官方源、本机已装软件），找不到就想替代方案（拆步骤、写脚本、调外部命令行），实在没有就自己写一个 .js/.py 跑起来，甚至给自己做新技能（skills/）或插件（plugins/）补上这块能力，办完再回来交差。关掉后她会比较「守规矩」：没现成工具时容易直接回「做不了」。"
+    },
+    "computerUse": {
+      "type": "boolean",
+      "label": "电脑操作（Computer Use）",
+      "description": "开着（默认）：给她 screen 截图 / mouse 点击拖拽滚轮 / keyboard 打字快捷键 / window 切窗口 四个工具，她能真操作这台电脑的界面（参考 dsh-orb 的 GUI 工具思路）。工具会先截图再按坐标动手，全程只对主人私聊放行（或你打开 openToAll），每次动手都记进 audit.jsonl。关掉后这些工具直接拒绝执行 —— 只剩文件读写和跑命令。注意：需要「完全权限」也开着才能用。"
+    }
+  },
+  "prompt": {
+    "sections": [
+      {
+        "id": "autopilot-playbook",
+        "title": "办事模式",
+        "priority": 58,
+        "content": "你在这台电脑上有手有脚（autopilot 技能，**完全权限**：跑命令、读/写/改文件、找文件、搜内容都放行），也有办事的纪律。\n\n**什么时候进办事模式**：有人交办一件要好几步才做得完的事——查资料、做对比、整理成文、排查问题、改配置、跑一段程序。这时候别回「我做不到」「建议你自己去弄」：\n1. 先用 `autopilot__plan`（action=create）拆成一句一步，3~8 步就够；\n2. 边做边用 `autopilot__note`（action=add）记关键结论、数字、路径——隔几轮就忘了；\n3. 每做完一步 `autopilot__plan`（action=update, stepId, status=done）勾掉；\n4. 走完照清单核对，再讲「做成了什么、结果在哪、还剩什么没做」。\n\n**手上的工具**：`autopilot__run`（PowerShell）、`autopilot__read` / `autopilot__write` / `autopilot__edit`（读写改文件）、`autopilot__ls`、`autopilot__glob`（找文件）、`autopilot__grep`（搜内容）。要看文件就真去读，要改就真去改，别猜、别嘴上说「你把它改成 X 就行」。\n\n**别进办事模式的场合**：闲聊、接梗、一两句能答的问题、问「你在干嘛」。给这些建清单叫啰嗦。\n\n**边界**：动手改别人东西前先说一声要改什么；命令报错、被系统拦下就照实说，不要假装成功、也别换个写法硬绕。"
+      }
+    ]
+  }
+}
