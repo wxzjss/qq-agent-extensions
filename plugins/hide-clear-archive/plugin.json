@@ -1,0 +1,15 @@
+{
+  "id": "hide-clear-archive",
+  "name": "隐藏清空存档",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "把「存档」页右上角那个「清空存档」按钮藏起来，防止手滑一键清掉整段对话（不可恢复）。只隐藏按钮本身，不改任何数据：按钮还在 DOM 里、点击事件也照常绑着，只是看不见——因为存档页每次重绘后都会直接给这个按钮绑点击事件，元素真删了会抛错把整页卡住。关掉插件即恢复显示。",
+  "author": "本机自建（按你的需求生成）",
+  "entry": "index.js",
+  "enabledByDefault": true,
+  "capabilities": [],
+  "requires": [],
+  "settings": {},
+  "configSchema": {}
+}
