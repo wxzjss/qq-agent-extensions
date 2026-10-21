@@ -54,15 +54,32 @@ function hostBase() {
   return { base: `http://127.0.0.1:${port}`, token };
 }
 
+/**
+ * 调宿主的本地接口。
+ * ⚠️ 端口不能只信配置：核心启动时如果 3210 被占，会顺延到 3211~3219。所以按
+ * "配置端口 → 向后扫 9 个"的顺序试，连不上才换下一个（换的是端口，不是重试次数）。
+ */
 async function hostApi(p, options = {}) {
   const { base, token } = hostBase();
-  const res = await fetch(base + p, {
-    ...options,
-    headers: { 'content-type': 'application/json', ...(token ? { 'x-console-token': token } : {}), ...(options.headers || {}) }
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-  return data;
+  const startPort = Number(new URL(base).port) || 3210;
+  let lastError = null;
+  for (let port = startPort; port < startPort + 10; port++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}${p}`, {
+        ...options,
+        headers: { 'content-type': 'application/json', ...(token ? { 'x-console-token': token } : {}), ...(options.headers || {}) }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      return data;
+    } catch (e) {
+      lastError = e;
+      // 只有"连不上"才换端口；接口本身报错（4xx/5xx）说明端口对了，直接抛
+      const refused = e?.cause?.code === 'ECONNREFUSED' || /fetch failed|ECONNREFUSED/i.test(String(e?.message || ''));
+      if (!refused) throw e;
+    }
+  }
+  throw new Error(`连不上 QQ Agent 本地接口（试过 ${startPort}~${startPort + 9}）：${lastError?.message ?? lastError}`);
 }
 
 /* ── 存档选择：把主人说的"那个存档"解析成唯一 chatKey ────────────── */
@@ -76,7 +93,7 @@ async function listArchives() {
   return archives || [];
 }
 
-async function resolveArchive(query) {
+async function resolveArchive(query, { allowMissing = false } = {}) {
   const q = String(query || '').trim();
   const all = await listArchives();
   if (!q) {
@@ -85,7 +102,10 @@ async function resolveArchive(query) {
   // ① 完整 chatKey
   if (/^(private|group|local):/.test(q)) {
     const hit = all.find((a) => a.chatKey === q);
-    return hit ? { archive: hit } : { error: `找不到存档 ${q}` };
+    if (hit) return { archive: hit };
+    // 读取路径：本地还没有这段存档也要允许拉回来（换机/重装后正是这种场景）
+    if (allowMissing) return { archive: { chatKey: q, chatName: '', total: 0 } };
+    return { error: `找不到存档 ${q}` };
   }
   // ② 纯数字：私聊和群可能同时存在 → 有歧义就拒绝，绝不猜
   if (/^\d+$/.test(q)) {
@@ -93,7 +113,9 @@ async function resolveArchive(query) {
     const g = all.find((a) => a.chatKey === `group:${q}`);
     if (p && g) return { error: `${q} 同时是私聊和群：请写成 private:${q} 或 group:${q}` };
     const hit = p || g;
-    return hit ? { archive: hit } : { error: `找不到 ${q} 的存档（既没有 private:${q} 也没有 group:${q}）` };
+    if (hit) return { archive: hit };
+    if (allowMissing) return { error: `${q} 本地没有存档，读取不知道该拉私聊还是群：请写成 private:${q} 或 group:${q}` };
+    return { error: `找不到 ${q} 的存档（既没有 private:${q} 也没有 group:${q}）` };
   }
   // ③ 按名字模糊匹配
   const hits = all.filter((a) => a.chatName && a.chatName.includes(q));
@@ -113,33 +135,38 @@ function localPath(c, chatKey) {
   return path.join(localDirOf(c), safeName(chatKey));
 }
 
-function ghPath(c, chatKey) {
-  return [c.pathPrefix, safeName(chatKey)].filter(Boolean).join('/');
-}
+/* ── GitHub 读写（含分片）────────────────────────────────────────────
+ * 坑：Contents API 对 >1MB 的文件不返回 content（只给 download_url），
+ * 直接 PUT 大 JSON 再 GET 回来会拿到空串 → JSON.parse 崩。
+ * 所以超过 900KB 就拆成 <base>.partN.json + <base>.index.json，读的时候按 index 合并。
+ */
+const GH_SOFT_LIMIT = 900 * 1024;
+const baseOf = (chatKey) => safeName(chatKey).replace(/\.json$/, '');
+const ghPathName = (c, name) => [c.pathPrefix, name].filter(Boolean).join('/');
 
-async function ghGet(c, chatKey) {
-  const p = ghPath(c, chatKey);
+async function ghGetText(c, name) {
+  const p = ghPathName(c, name);
   const res = await fetch(`https://api.github.com/repos/${c.repo}/contents/${encodeURI(p)}?ref=${encodeURIComponent(c.branch)}`, {
     headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'qq-agent-chat-archive-sync' }
   });
   if (res.status === 404) return null;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.message || `GitHub 读取失败 HTTP ${res.status}`);
-  const text = Buffer.from(String(data.content || '').replace(/\n/g, ''), 'base64').toString('utf8');
-  return { sha: data.sha, data: JSON.parse(text) };
+  const raw = String(data.content || '').replace(/\n/g, '');
+  if (!raw) throw new Error(`文件太大，Contents API 不返回内容（${(data.size / 1024 / 1024).toFixed(1)}MB）：${p}`);
+  return { sha: data.sha, text: Buffer.from(raw, 'base64').toString('utf8') };
 }
 
-async function ghPut(c, chatKey, payload, note) {
-  const p = ghPath(c, chatKey);
-  const url = `https://api.github.com/repos/${c.repo}/contents/${encodeURI(p)}`;
-  const existing = await ghGet(c, chatKey).catch(() => null);
+async function ghPutText(c, name, text, note) {
+  const p = ghPathName(c, name);
+  const existing = await ghGetText(c, name).catch(() => null);
   const body = {
-    message: note || `archive: ${chatKey} @ ${new Date().toISOString()}`,
-    content: Buffer.from(JSON.stringify(payload, null, 1), 'utf8').toString('base64'),
+    message: note || `archive: ${name} @ ${new Date().toISOString()}`,
+    content: Buffer.from(text, 'utf8').toString('base64'),
     branch: c.branch,
     ...(existing?.sha ? { sha: existing.sha } : {})
   };
-  const res = await fetch(url, {
+  const res = await fetch(`https://api.github.com/repos/${c.repo}/contents/${encodeURI(p)}`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/vnd.github+json', 'content-type': 'application/json', 'User-Agent': 'qq-agent-chat-archive-sync' },
     body: JSON.stringify(body)
@@ -147,6 +174,52 @@ async function ghPut(c, chatKey, payload, note) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.message || `GitHub 写入失败 HTTP ${res.status}`);
   return { url: data?.content?.html_url || '', replaced: Boolean(existing?.sha) };
+}
+
+/** 上传一段存档（自动决定单文件 or 分片）。 */
+async function publishToGitHub(c, chatKey, payload, note) {
+  const base = baseOf(chatKey);
+  const whole = JSON.stringify(payload, null, 1);
+  if (Buffer.byteLength(whole) <= GH_SOFT_LIMIT) {
+    const w = await ghPutText(c, `${base}.json`, whole, note);
+    return { path: ghPathName(c, `${base}.json`), parts: 1, url: w.url, replaced: w.replaced };
+  }
+  const head = { ...payload, messages: [] };
+  const chunks = [];
+  let cur = [];
+  for (const m of payload.messages) {
+    cur.push(m);
+    const size = Buffer.byteLength(JSON.stringify({ ...head, messages: cur }, null, 1));
+    if (size > GH_SOFT_LIMIT - 4096) { cur.pop(); chunks.push(cur); cur = [m]; }
+  }
+  if (cur.length) chunks.push(cur);
+  for (let i = 0; i < chunks.length; i++) {
+    const part = { ...head, part: i + 1, total: chunks.length, messages: chunks[i] };
+    await ghPutText(c, `${base}.part${i + 1}.json`, JSON.stringify(part, null, 1), `${note || 'archive'} · 分片 ${i + 1}/${chunks.length}`);
+  }
+  const index = {
+    chatKey, chatName: payload.chatName || '', chunked: true,
+    parts: chunks.length, count: payload.messages.length, exportedAt: payload.exportedAt
+  };
+  const w = await ghPutText(c, `${base}.index.json`, JSON.stringify(index, null, 1), `${note || 'archive'} · 索引`);
+  return { path: ghPathName(c, `${base}.index.json`), parts: chunks.length, url: w.url, replaced: w.replaced };
+}
+
+/** 读回一段存档：先试单文件，再试 index + 分片。 */
+async function readFromGitHub(c, chatKey) {
+  const base = baseOf(chatKey);
+  const single = await ghGetText(c, `${base}.json`);
+  if (single) return JSON.parse(single.text);
+  const idx = await ghGetText(c, `${base}.index.json`);
+  if (!idx) return null;
+  const meta = JSON.parse(idx.text);
+  let messages = [];
+  for (let i = 1; i <= Number(meta.parts || 0); i++) {
+    const p = await ghGetText(c, `${base}.part${i}.json`);
+    if (!p) throw new Error(`缺少分片 ${i}/${meta.parts}（${base}）`);
+    messages = messages.concat(JSON.parse(p.text).messages || []);
+  }
+  return { ...meta, messages };
 }
 
 /* ── 工具 ────────────────────────────────────────────────────────── */
@@ -205,12 +278,15 @@ export function setup(api) {
       };
       try {
         if (useGitHub(c)) {
-          const w = await ghPut(c, archive.chatKey, payload, args?.note);
-          log(`[${ID}] 已发布 ${archive.chatKey} → ${c.repo}/${ghPath(c, archive.chatKey)}`);
-          return { content: `已发布「${archive.chatKey}」（${messages.length} 条）到 GitHub${w.replaced ? '（覆盖旧文件）' : '（新建文件）'}。\n${w.url}` };
+          const w = await publishToGitHub(c, archive.chatKey, payload, args?.note);
+          log(`[${ID}] 已发布 ${archive.chatKey} → ${c.repo}/${w.path}`);
+          return {
+            content: `已发布「${archive.chatKey}」（${messages.length} 条）到 GitHub`
+              + `${w.parts > 1 ? `，因超过 900KB 拆成 ${w.parts} 个分片` : ''}`
+              + `${w.replaced ? '（覆盖旧文件）' : '（新建文件）'}。\n${w.url}`
+          };
         }
         const target = localPath(c, archive.chatKey);
-        if (!target) throw new Error('没配置本地目录');
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, JSON.stringify(payload, null, 1), 'utf8');
         log(`[${ID}] 已发布 ${archive.chatKey} → ${target}`);
@@ -237,15 +313,15 @@ export function setup(api) {
     category: 'utility',
     async execute(ctx, args) {
       const c = cfg();
-      const r = await resolveArchive(args?.archive);
+      // 读取允许"本地还没有这段存档"（换机/重装后正是要拉回来的时候）
+      const r = await resolveArchive(args?.archive, { allowMissing: true });
       if (r.error) return { content: r.error, isError: true };
       const { archive } = r;
       try {
         let payload = null;
         if (useGitHub(c)) {
-          const got = await ghGet(c, archive.chatKey);
-          if (!got) return { content: `GitHub 上没有这个存档：${ghPath(c, archive.chatKey)}`, isError: true };
-          payload = got.data;
+          payload = await readFromGitHub(c, archive.chatKey);
+          if (!payload) return { content: `GitHub 上没有这个存档：${ghPathName(c, baseOf(archive.chatKey) + '.json')}`, isError: true };
         } else {
           const target = localPath(c, archive.chatKey);
           if (!target || !fs.existsSync(target)) return { content: `本地目录里没有这个存档：${target || '(未配置)'}`, isError: true };
