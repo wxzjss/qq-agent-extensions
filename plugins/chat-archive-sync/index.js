@@ -328,13 +328,30 @@ export function setup(api) {
           payload = JSON.parse(fs.readFileSync(target, 'utf8'));
         }
         if (!Array.isArray(payload?.messages)) return { content: '远端文件格式不对：缺少 messages 数组', isError: true };
+
+        // 覆盖前先把本地这一份存起来：读取是不可逆的，至少留一条回头路
+        let safety = '';
+        try {
+          const before = await hostApi(`/api/archives/export?chatKey=${encodeURIComponent(archive.chatKey)}`);
+          if (Array.isArray(before?.messages) && before.messages.length) {
+            const dir = path.join(DATA_DIR, 'archive-sync-backup');
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const f = path.join(dir, `${baseOf(archive.chatKey)}.${stamp}.json`);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(f, JSON.stringify(before, null, 1), 'utf8');
+            safety = `\n（覆盖前已把本地旧版存到 ${f}）`;
+          }
+        } catch (e) {
+          log(`[${ID}] 覆盖前备份失败（继续执行）：${e?.message ?? e}`);
+        }
+
         const res = await hostApi('/api/archives/import', {
           method: 'POST',
           body: JSON.stringify({ chatKey: archive.chatKey, messages: payload.messages })
         });
         log(`[${ID}] 已读取 ${archive.chatKey} 覆盖本地（${res.count} 条）`);
         return {
-          content: `已读取并覆盖本地存档「${archive.chatKey}」：${res.count} 条（远端导出时间 ${payload.exportedAt || '未知'}）。`
+          content: `已读取并覆盖本地存档「${archive.chatKey}」：${res.count} 条（远端导出时间 ${payload.exportedAt || '未知'}）。${safety}`
         };
       } catch (e) {
         return { content: `读取失败：${e?.message ?? e}`, isError: true };
