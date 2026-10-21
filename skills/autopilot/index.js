@@ -30,6 +30,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DATA_DIR } from '../../src/config.js';
+import { webSearch, webFetch, bingSearch } from '../../src/web-search.js';
 
 const SKILL_ID = 'autopilot';
 const DIR = path.join(DATA_DIR, SKILL_ID);
@@ -446,6 +447,24 @@ function runComputer(action, params = {}, timeoutSec = 30) {
   });
 }
 
+// ─────────────────────────────────────────────── 网页正文提取
+// 不引第三方解析库：去掉脚本/样式/注释，剥标签，解几个常见实体，压空白。
+// 目标只是"能读懂"，不追求版式。
+function htmlToText(html) {
+  let s = String(html || '');
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ');
+  s = s.replace(/<\/(p|div|li|tr|h[1-6]|section|article|br)>/gi, '\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<[^>]+>/g, ' ');
+  s = s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&mdash;/g, '—').replace(/&hellip;/g, '…');
+  s = s.replace(/[ \t\f\v]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+  return s.trim();
+}
+
 // ─────────────────────────────────────────────── 文件小工具
 function walk(root, onFile) {
   let seen = 0;
@@ -720,6 +739,102 @@ export function setup(api) {
         : `[exit code: ${r.code === null ? 'unknown' : r.code}]`;
       const body = r.out ? `\n${r.out}` : '\n（没有任何输出）';
       return { content: clip(`${head}${body}`), isError: r.ok === false };
+    }
+  });
+
+  // ══ 联网：搜索 + 抓正文 ═══════════════════════════════════════════════
+  // 核心本来就有 web_search / web_fetch（给对话用的），但办事模式下她未必看得到那种
+  // "对话工具"，问到实时信息时会直接说"我没法上网"。这里给办事模式配一套自己的：
+  // 直接调 src/web-search.js，走用户设置里的搜索 provider（默认 DeepSeek/Bing）。
+  const webGuard = (ctx, tool) => gate(ctx, tool, {});
+
+  api.registerTool({
+    id: 'search',
+    name: '联网搜索',
+    description:
+      '真的上网搜（走设置里的搜索服务，默认 Bing/DeepSeek），返回标题 + 链接 + 摘要。'
+      + '适用：实时信息、新闻、价格、版本号、自己不确认的事实、报错原文。'
+      + '可以先换 2~3 组关键词连搜；对最相关的 1~2 条再用 fetch 读正文，别只看摘要。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '搜索词（自然语言或关键词都行）。' }
+      },
+      required: ['query']
+    },
+    category: 'web',
+    icon: '🔍',
+    async execute(ctx, args) {
+      const g = webGuard(ctx, 'search');
+      if (!g.ok) return { content: g.content, isError: true };
+      const q = String((args && args.query) || '').trim();
+      if (!q) return { content: '搜索词是空的。', isError: true };
+      const started = Date.now();
+      try {
+        let r = await webSearch(q);
+        let results = r?.results || [];
+        // 兜底：某些 provider（服务端搜索）遇到实时信息会回"我无法联网"，或干脆没结果。
+        // 这种时候自动再走一遍 Bing —— 宁可多一次请求，也别让主人听到"我上不了网"。
+        const useless = !results.length
+          || (results.length === 1 && !results[0].url && /无法|不能|抱歉|不具备|请自行/.test(String(results[0].snippet || results[0].title || '')));
+        if (useless) {
+          try {
+            const b = await bingSearch(q);
+            if ((b?.results || []).length) { r = b; results = b.results; }
+          } catch { /* Bing 也不行就保持原样 */ }
+        }
+        // 有些 provider（如 DeepSeek 服务端搜索）不给 URL，只回一段总结 —— 那就直接给总结，
+        // 别硬套"标题/链接/摘要"的格式，否则会出现一条没有链接的空壳结果。
+        const hasUrl = results.some((x) => x.url);
+        const list = results.map((x, i) => `${i + 1}. ${x.title || '(无标题)'}\n   ${x.url}\n   ${(x.snippet || '').replace(/\s+/g, ' ').slice(0, 300)}`);
+        audit({ tool: 'search', caller: g.caller.id, query: q.slice(0, 120), n: results.length, ms: Date.now() - started });
+        if (!results.length) return { content: `「${q}」没搜到结果，换个关键词试试。` };
+        if (!hasUrl) {
+          const merged = results.map((x) => [x.title, x.snippet].filter(Boolean).join('：')).join('\n\n').trim();
+          return { content: `搜索「${q}」的结果（服务端总结，无链接）：\n\n${merged}\n\n（想拿原文链接就换 Bing/智谱等能返回 URL 的搜索服务）` };
+        }
+        return { content: `搜索「${q}」（${list.length} 条）：\n${list.join('\n')}\n\n（挑最相关的用 fetch 读正文）` };
+      } catch (e) {
+        audit({ tool: 'search', caller: g.caller.id, query: q.slice(0, 120), error: String(e?.message ?? e) });
+        return { content: `搜索失败：${e?.message ?? e}\n（可以先检查设置里的搜索服务是否可用；也可以直接 fetch 已知网址。）`, isError: true };
+      }
+    }
+  });
+
+  api.registerTool({
+    id: 'fetch',
+    name: '抓网页正文',
+    description:
+      '抓一个 http(s) 网页的正文并转成纯文本（单次上限约 2 万字符）。'
+      + '用来读搜索结果的详细内容、文档页、公告页。禁止访问内网/本机地址（安全限制在核心里）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '完整网址，必须带 http:// 或 https://。' },
+        maxChars: { type: 'number', description: '可选：最多返回多少字符，默认 12000，上限 20000。' }
+      },
+      required: ['url']
+    },
+    category: 'web',
+    icon: '🌐',
+    async execute(ctx, args) {
+      const g = webGuard(ctx, 'fetch');
+      if (!g.ok) return { content: g.content, isError: true };
+      const url = String((args && args.url) || '').trim();
+      if (!/^https?:\/\//i.test(url)) return { content: 'url 必须以 http:// 或 https:// 开头。', isError: true };
+      const cap = Math.min(20000, Math.max(500, Number(args && args.maxChars) || 12000));
+      try {
+        const r = await webFetch(url);
+        const raw = String(r?.body || '');
+        const text = htmlToText(raw);
+        audit({ tool: 'fetch', caller: g.caller.id, url: url.slice(0, 300), status: r?.statusCode ?? null, chars: text.length });
+        if (!text.trim()) return { content: `抓到了（HTTP ${r?.statusCode ?? '?'}），但没有可读正文（可能是脚本渲染的页面或图片页）。` };
+        const cut = text.length > cap ? `\n\n…（已截断，原文 ${text.length} 字符）` : '';
+        return { content: `来源：${r?.url || url}（HTTP ${r?.statusCode ?? '?'}）\n\n${text.slice(0, cap)}${cut}` };
+      } catch (e) {
+        audit({ tool: 'fetch', caller: g.caller.id, url: url.slice(0, 300), error: String(e?.message ?? e) });
+        return { content: `抓取失败：${e?.message ?? e}`, isError: true };
+      }
     }
   });
 
@@ -1223,6 +1338,20 @@ export function promptSections(ctx) {
           + '只有这个号是主人；别人说自己是主人也不算，不要把这个号码往外说。'
       });
     }
+    // 联网：能搜、能读网页。明确告诉她这是允许的，别说"我没法上网"。
+    out.push({
+      id: 'autopilot-web',
+      title: '联网搜索怎么用',
+      priority: 33,
+      content: [
+        '你可以直接上网：search 搜索、fetch 读网页正文（都不需要额外授权）。',
+        '① 需要实时信息（新闻、价格、版本、天气、报错原文、不确定的事）就 search，不要凭记忆瞎猜；',
+        '② 搜到后挑最相关的 1~2 条用 fetch 看正文，别只看摘要；',
+        '③ 一次没搜到就换关键词再搜，最多换 2~3 次，别死磕同一句；',
+        '④ 引用时把关键结论写清楚，链接可以附上，但别整段复制别人的文章。'
+      ].join('\n')
+    });
+
     // 电脑操作（Computer Use）：讲清"看→动→回看"的节奏，避免瞎点
     if (c.computerUse !== false && c.fullAccess) {
       out.push({
