@@ -224,14 +224,22 @@ function audit(entry) {
  */
 function callerOf(ctx) {
   if (!ctx) return { id: '', kind: 'unknown', name: '' };
-  const kind = ctx.kind === 'private' ? 'private' : ctx.kind === 'group' ? 'group' : 'unknown';
-  return { id: clean(ctx.chatId, 30), kind, name: clean(ctx.chatName, 40) };
+  // local = 控制台里的「聊天」：只在本机、只有主人能开，按私聊对待
+  const raw = ctx.kind === 'private' || ctx.kind === 'local' ? 'private'
+    : ctx.kind === 'group' ? 'group' : 'unknown';
+  return { id: clean(ctx.chatId, 30), kind: raw, name: clean(ctx.chatName, 40) };
 }
 
 function gate(ctx, toolName, args) {
   const c = cfg();
   const caller = callerOf(ctx);
   if (c.openToAll) return { ok: true, caller };
+  // 本地聊天（local:console）就是主人在自己电脑上说话：直接放行，不必再对 QQ 号。
+  // 这条是 2026-10-22 加的 —— 之前它被当成"不是私聊"而拒绝，主人在聊天页让她干活
+  // 会得到「这个只有主人私聊能用」。
+  if (ctx?.local === true || String(ctx?.chatKey || '').startsWith('local:')) {
+    return { ok: true, caller: { ...caller, kind: 'private', local: true } };
+  }
 
   // ① 技能里写死的主人 QQ 优先于一切（包括「主人识别」插件）。
   //    主人 2026-10-21 要求：以这里填的号码为准 —— 填了就不再看别的地方。
