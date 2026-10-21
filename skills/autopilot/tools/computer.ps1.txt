@@ -1,0 +1,185 @@
+# computer.ps1 - GUI control helper for the autopilot skill (Windows only)
+# All output is ASCII JSON on stdout, so no console-encoding surprises.
+# Actions: screenshot | windows | focus | mouse | key
+param(
+  [Parameter(Mandatory = $true)][string]$Action,
+  [string]$Out = "",
+  [string]$Title = "",
+  [int]$Handle = 0,
+  [string]$MouseAction = "",
+  [int]$X = -1,
+  [int]$Y = -1,
+  [int]$ToX = -1,
+  [int]$ToY = -1,
+  [int]$Delta = -120,
+  [string]$Keys = "",
+  [string]$Text = "",
+  [int]$DelayMs = 60
+)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$sig = @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class W32 {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, int data, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lp);
+  [DllImport("user32.dll")] public static extern IntPtr OpenInputDesktop(uint f, bool inherit, uint access);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  public delegate bool EnumProc(IntPtr h, IntPtr lp);
+  public struct POINT { public int X; public int Y; }
+}
+'@
+if (-not ('W32' -as [type])) { Add-Type -TypeDefinition $sig }
+
+function Out-Json($obj) {
+  $obj | ConvertTo-Json -Compress -Depth 4
+}
+
+switch ($Action.ToLower()) {
+
+  'screenshot' {
+    # 虚拟屏幕的范围用 GetSystemMetrics 取（有的会话里 SystemInformation.VirtualScreen 会是 0）
+    $vx = [W32]::GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+    $vy = [W32]::GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+    $vw = [W32]::GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+    $vh = [W32]::GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+    if ($vw -le 0 -or $vh -le 0) {
+      $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+      $vx = $b.X; $vy = $b.Y; $vw = $b.Width; $vh = $b.Height
+    }
+    if ($vw -le 0 -or $vh -le 0) {
+      Out-Json @{ ok = $false; error = 'cannot read screen size (no interactive desktop?)'; w = $vw; h = $vh }
+      break
+    }
+    $bmp = [System.Drawing.Bitmap]::new([int]$vw, [int]$vh)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($vx, $vy, 0, 0, $bmp.Size)
+    $g.Dispose()
+    if ([string]::IsNullOrWhiteSpace($Out)) {
+      $Out = Join-Path $env:TEMP ("autopilot-shot-{0}.png" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    }
+    $dir = Split-Path -Parent $Out
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Dispose()
+    Out-Json @{ ok = $true; path = $Out; width = [int]$vw; height = [int]$vh; left = [int]$vx; top = [int]$vy }
+  }
+
+  'windows' {
+    $list = New-Object System.Collections.ArrayList
+    $cb = [W32+EnumProc]{
+      param($h, $lp)
+      if ([W32]::IsWindowVisible($h)) {
+        $sb = New-Object System.Text.StringBuilder 512
+        [void][W32]::GetWindowTextW($h, $sb, 512)
+        $t = $sb.ToString().Trim()
+        if ($t.Length -gt 0) {
+          $cb2 = New-Object System.Text.StringBuilder 256
+          [void][W32]::GetClassNameW($h, $cb2, 256)
+          $procId = 0
+          [void][W32]::GetWindowThreadProcessId($h, [ref]$procId)
+          [void]$list.Add(@{ handle = [int64]$h; title = $t; class = $cb2.ToString(); pid = $procId })
+        }
+      }
+      return $true
+    }
+    [void][W32]::EnumWindows($cb, [IntPtr]::Zero)
+    $top = $list | Sort-Object { $_.title } | Select-Object -First 40
+    Out-Json @{ ok = $true; count = $list.Count; windows = @($top) }
+  }
+
+  'focus' {
+    $target = [IntPtr]::Zero
+    if ($Handle -ne 0) { $target = [IntPtr]$Handle }
+    elseif ($Title) {
+      $cb = [W32+EnumProc]{
+        param($h, $lp)
+        $sb = New-Object System.Text.StringBuilder 512
+        [void][W32]::GetWindowTextW($h, $sb, 512)
+        $t = $sb.ToString()
+        if ($t -and $t.ToLower().Contains($Title.ToLower())) { $script:found = $h; return $false }
+        return $true
+      }
+      $script:found = [IntPtr]::Zero
+      [void][W32]::EnumWindows($cb, [IntPtr]::Zero)
+      $target = $script:found
+    }
+    if ($target -eq [IntPtr]::Zero) { Out-Json @{ ok = $false; error = 'window not found' }; break }
+    [void][W32]::ShowWindow($target, 9)     # SW_RESTORE
+    $ok = [W32]::SetForegroundWindow($target)
+    Start-Sleep -Milliseconds 120
+    Out-Json @{ ok = [bool]$ok; handle = [int64]$target }
+  }
+
+  'mouse' {
+    $act = $MouseAction.ToLower()
+    # 鼠标事件的常量：1=move 2=leftdown 4=leftup 8=rightdown 16=rightup 2048=wheel
+    if ($act -eq 'move' -or $act -eq 'click' -or $act -eq 'double' -or $act -eq 'right' -or $act -eq 'drag') {
+      if ($X -lt 0 -or $Y -lt 0) { Out-Json @{ ok = $false; error = 'x/y required' }; break }
+      [void][W32]::SetCursorPos($X, $Y)
+      Start-Sleep -Milliseconds $DelayMs
+    }
+    switch ($act) {
+      'move'   { }
+      'click'  { [W32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [W32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+      'double' { for ($i = 0; $i -lt 2; $i++) { [W32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 30; [W32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60 } }
+      'right'  { [W32]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [W32]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero) }
+      'drag'   {
+        if ($ToX -lt 0 -or $ToY -lt 0) { Out-Json @{ ok = $false; error = 'toX/toY required for drag' }; break }
+        [W32]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 60
+        [void][W32]::SetCursorPos($ToX, $ToY)
+        Start-Sleep -Milliseconds 80
+        [W32]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+      }
+      'scroll' {
+        $p = New-Object W32+POINT
+        if ($X -ge 0 -and $Y -ge 0) { [void][W32]::SetCursorPos($X, $Y); Start-Sleep -Milliseconds $DelayMs }
+        [W32]::mouse_event(2048, 0, 0, $Delta, [UIntPtr]::Zero)
+      }
+      default { Out-Json @{ ok = $false; error = "unknown mouse action: $act" }; break }
+    }
+    $p2 = New-Object W32+POINT
+    [void][W32]::GetCursorPos([ref]$p2)
+    Out-Json @{ ok = $true; action = $act; x = $p2.X; y = $p2.Y }
+  }
+
+  'pos' {
+    $p = New-Object W32+POINT
+    [void][W32]::GetCursorPos([ref]$p)
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    Out-Json @{ ok = $true; x = $p.X; y = $p.Y; screenW = $b.Width; screenH = $b.Height }
+  }
+
+  'key' {
+    if ($Text) {
+      # 中文/符号一律走剪贴板粘贴，SendKeys 传不了 CJK
+      Set-Clipboard -Value $Text
+      Start-Sleep -Milliseconds 80
+      [System.Windows.Forms.SendKeys]::SendWait('^v')
+      Start-Sleep -Milliseconds 120
+      Out-Json @{ ok = $true; mode = 'paste'; chars = $Text.Length }
+    } elseif ($Keys) {
+      [System.Windows.Forms.SendKeys]::SendWait($Keys)
+      Start-Sleep -Milliseconds 80
+      Out-Json @{ ok = $true; mode = 'sendkeys'; keys = $Keys }
+    } else {
+      Out-Json @{ ok = $false; error = 'keys or text required' }
+    }
+  }
+
+  default { Out-Json @{ ok = $false; error = "unknown action: $Action" } }
+}
