@@ -42,19 +42,18 @@ function detectEol(text) {
 }
 
 function backupRoot() {
-  // 与宿主同源的数据目录：从 config.js 取，取不到就退回安装目录旁的 data
-  let dataDir = '';
-  try {
-    const url = new URL('../../src/config.js', import.meta.url);
-    // 同步拿不到 ESM 导出，这里用常见路径兜底
-    dataDir = path.resolve(appRootOf(), 'data');
-  } catch { /* ignore */ }
-  return path.join(dataDir || path.resolve(appRootOf(), 'data'), 'localchat-kit-backup');
+  // 与宿主的数据目录同源（<安装目录>/data；自定义 QQ_AGENT_DATA_DIR 时也基本一致），
+  // 好处是"备份跟着这套安装走"，不会在别处留一堆没人认领的文件。
+  return path.join(appRootOf(), 'data', 'localchat-kit-backup');
 }
 
 /** 判断某个文件当前的补丁状态：done / pending / mismatch */
 function statusOf(file, content) {
-  if (file.create) return content === null ? 'pending' : 'done';
+  if (file.create) {
+    if (content === null) return 'pending';
+    // 新建文件也要比内容：别的地方放过一份同名但不同内容的东西时，不能当成"已装好"
+    return content.split('\r\n').join('\n') === String(file.content).split('\r\n').join('\n') ? 'done' : 'mismatch';
+  }
   if (content === null) return 'missing';
   const norm = content.split('\r\n').join('\n');
   let applied = 0;
@@ -159,6 +158,9 @@ export function setup(api) {
         return { content: `已经是安装状态，无需重复安装。\n（${skipped.length} 个文件都就绪；重启过即生效。）` };
       }
 
+      // 备份目录先建出来：建不了（目录只读等）就立刻失败，不留"改了一半"的状态
+      fs.mkdirSync(bdir, { recursive: true });
+
       // 备份 → 应用
       for (const item of plan) {
         const { f, abs, cur } = item;
@@ -185,10 +187,16 @@ export function setup(api) {
         changed.push(f.file);
       }
 
-      log(`本地聊天已安装：${changed.length} 个文件（备份 ${bdir}）`);
+      // 装完自查一遍：不靠"我以为写进去了"，靠重新读盘判定
+      const after = collectStatus(root);
+      const notDone = after.filter((r2) => r2.status !== 'done');
+      log(`本地聊天已安装：${changed.length} 个文件（备份 ${bdir}）${notDone.length ? `，但有 ${notDone.length} 项未就绪` : ''}`);
       return {
         content: `已安装（${changed.length} 个文件）：\n${changed.map((x) => '· ' + x).join('\n')}\n`
           + (skipped.length ? `\n跳过（本来就就绪）：${skipped.join('、')}\n` : '')
+          + (notDone.length
+            ? `\n⚠️ 装完复查仍不对：${notDone.map((x) => `${x.file}(${x.status})`).join('、')}\n`
+            : `\n复查：${after.length} 个文件全部就绪 ✅\n`)
           + `\n备份目录：${bdir}\n⚠️ 必须重启 QQ Agent 才生效（核心模块在启动时加载）。`
       };
     }
