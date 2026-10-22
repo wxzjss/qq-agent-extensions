@@ -1,5 +1,5 @@
 {
- "generatedAt": "2026-10-22T07:39:58.580Z",
+ "generatedAt": "2026-10-22T07:48:44.049Z",
  "files": [
   {
    "file": "src/app.js",
@@ -76,6 +76,10 @@
    "file": "src/prompt.js",
    "hunks": [
     {
+     "find": "    '【轻量记忆：偶尔用，别当笔记本】',\n    '- memory_append 只用来记录\"对某位群友的长期印象\"（他的说话风格、爱玩的梗、雷点、身份关系等稳定信息）；这些内容下次运行会自动出现在【记忆】里。',\n    '- 不要记临时话题、临时想法；只记以后跟这个人打交道还用得上的。印象过时/不再准确时用 memory_remove 删掉。',\n    '- 每次扫一眼【记忆】，只有自然相关才主动提起；不要为了用记忆而硬聊旧话题。'\n  ].join('\\n');\n}\n",
+     "replace": "    '【轻量记忆：偶尔用，别当笔记本】',\n    '- memory_append 只用来记录\"对某位群友的长期印象\"（他的说话风格、爱玩的梗、雷点、身份关系等稳定信息）；这些内容下次运行会自动出现在【记忆】里。',\n    '- 不要记临时话题、临时想法；只记以后跟这个人打交道还用得上的。印象过时/不再准确时用 memory_remove 删掉。',\n    '- 每次扫一眼【记忆】，只有自然相关才主动提起；不要为了用记忆而硬聊旧话题。',\n    '- 在「聊天」页（会话 key 以 local: 开头）和你说话的只有主人本人：那里没有群成员可查，'\n      + 'memory_append 的 userId 可以留空或填主人 QQ，要记的就是「对主人的印象」。'\n  ].join('\\n');\n}\n"
+    },
+    {
      "find": "  // 与系统提示词共用同一来源 —— 两处不一致会让\"系统里的角色\"和\"输入里的角色\"打架。\n  const chatPersona = personaForChat(ctx.chatKey);\n  const now = Date.now();\n  const excludeIds = ctx.triggerEntries.map((m) => m.id);\n  // 读取条数由上下文档位决定（ctx.contextLimit 由 orchestrator 在唤醒时算好传来；\n  // 随机档的骰子结果必须固定，否则每次渲染都会重新掷、提示词与会话记录对不上）\n  const contextLimit = ctx.contextLimit === null || ctx.contextLimit === undefined\n    ? null                                   // 没给 = 按默认（全读档的上限）\n    : Math.max(0, Number(ctx.contextLimit) || 0);\n  const past = buildPastState(ctx.store, ctx.chatKey, { excludeIds, limit: contextLimit });\n  // 锚定轮需要\"截尾前的全部已读\"来补齐锚点条目（2026-09-26 修：锚定轮不受\n  // historyCount 截尾 —— 先按滑窗取一遍是为了 reset 轮的窗口口径，锚定成立时\n  // 再从全量池里把锚点条目找回来）。全量池 = 排除触发批后的最近 500 条已读\n  // （500 是 drain 路径的上界，远大于任何合理的锚点+追加规模）。\n  const pastPool = buildPastState(ctx.store, ctx.chatKey, { excludeIds, limit: 500 });\n\n  // ── 提示词锚点（前缀缓存深化）──\n  // 连续触发时把上一轮的【记忆】+【已读信息】前缀原样复用，新内容追加其后。",
      "replace": "  // 与系统提示词共用同一来源 —— 两处不一致会让\"系统里的角色\"和\"输入里的角色\"打架。\n  const chatPersona = personaForChat(ctx.chatKey);\n  const now = Date.now();\n  // 触发批的 id 只在\"同一本存档\"里才有意义：\n  // 本地聊天借看别的存档时，触发条目的 id 属于 local:console，跟被借存档的 id 是两套编号，\n  // 拿它们去排除会把人家 id 相同的消息误删掉 → 借看时不做任何排除。\n  const excludeIds = ctx.contextFrom ? [] : ctx.triggerEntries.map((m) => m.id);\n  // 读取条数由上下文档位决定（ctx.contextLimit 由 orchestrator 在唤醒时算好传来；\n  // 随机档的骰子结果必须固定，否则每次渲染都会重新掷、提示词与会话记录对不上）\n  const contextLimit = ctx.contextLimit === null || ctx.contextLimit === undefined\n    ? null                                   // 没给 = 按默认（全读档的上限）\n    : Math.max(0, Number(ctx.contextLimit) || 0);\n  // 只读借用别的存档：本地聊天可以\"读某个存档的记忆与历史\"，但**写**仍然写在\n  // 自己的 chatKey 上（记忆写入走 ctx.chatKey，不经过这里）。contextFrom 只影响读。\n  const contextKey = ctx.contextFrom || ctx.chatKey;\n  const past = buildPastState(ctx.store, contextKey, { excludeIds, limit: contextLimit });\n  // 锚定轮需要\"截尾前的全部已读\"来补齐锚点条目（2026-09-26 修：锚定轮不受\n  // historyCount 截尾 —— 先按滑窗取一遍是为了 reset 轮的窗口口径，锚定成立时\n  // 再从全量池里把锚点条目找回来）。全量池 = 排除触发批后的最近 500 条已读\n  // （500 是 drain 路径的上界，远大于任何合理的锚点+追加规模）。\n  const pastPool = buildPastState(ctx.store, contextKey, { excludeIds, limit: 500 });\n\n  // ── 提示词锚点（前缀缓存深化）──\n  // 连续触发时把上一轮的【记忆】+【已读信息】前缀原样复用，新内容追加其后。"
     },
@@ -142,6 +146,10 @@
   {
    "file": "src/tools.js",
    "hunks": [
+    {
+     "find": "  registerTool({\n    id: 'memory_append',\n    name: '记录印象',\n    description: '记一条对群友的长期印象（下次运行会自动看到）。只记\"以后和这个人打交道时用得上\"的稳定印象：他的身份/关系、说话风格、爱玩的梗、雷点、常聊话题、别踩的坑。太临时的事情不要记。userId 必须填对方的 QQ 号（不知道就先调 get_active_members / get_recent_messages 查）；target 填备注名/群名片/昵称，用于展示。',\n    category: 'memory',\n    icon: '🧠',\n    parameters: {",
+     "replace": "  registerTool({\n    id: 'memory_append',\n    name: '记录印象',\n    description: '记一条对人的长期印象（下次运行会自动看到）。只记\"以后跟这个人打交道时用得上\"的稳定印象：身份/关系、说话风格、爱玩的梗、雷点、常聊话题、别踩的坑。太临时的事情不要记。userId 填对方 QQ 号；不知道就先调 get_active_members / get_recent_messages 查。注意：本地聊天（会话 key 以 local: 开头）里没有群成员，对面就是主人本人，userId 可省略或直接填主人 QQ。target 填备注名/群名片/昵称，用于展示。',\n    category: 'memory',\n    icon: '🧠',\n    parameters: {"
+    },
     {
      "find": "    },\n    async execute(ctx, args) {\n      const userId = String(args.userId ?? '').trim();\n      if (!/^\\d{1,15}$/.test(userId)) {\n        return err(`userId 必须是数字 QQ 号（收到：${JSON.stringify(args.userId)}）。先用 get_active_members 查准确 QQ 号再记。`);\n      }\n      const entry = ctx.memory.append(ctx.chatKey, 'memberImpression', String(args.content ?? ''), {\n        userId,\n        target: String(args.target ?? '').trim()\n      });\n      return ok({ saved: true, entry });",
      "replace": "    },\n    async execute(ctx, args) {\n      const userId = String(args.userId ?? '').trim();\n      // 本地聊天（local:*）里没有\"群友\"：对面就是主人本人。\n      // 模型不一定知道主人 QQ，这里用会话上下文的 chatId（编排器已映射成主人 QQ）兜底，\n      // 否则每次记印象都会因\"不是数字 QQ 号\"失败 —— 表现就是聊天的记忆永远是空的。\n      let userIdResolved = userId;\n      if (!/^\\d{1,15}$/.test(userIdResolved) && String(ctx.chatKey || '').startsWith('local:')) {\n        const fb = String(ctx.chatId || '').trim();\n        if (/^\\d{1,15}$/.test(fb)) userIdResolved = fb;\n      }\n      if (!/^\\d{1,15}$/.test(userIdResolved)) {\n        return err(`userId 必须是数字 QQ 号（收到：${JSON.stringify(args.userId)}）。先用 get_active_members 查准确 QQ 号再记。`);\n      }\n      const entry = ctx.memory.append(ctx.chatKey, 'memberImpression', String(args.content ?? ''), {\n        userId: userIdResolved,\n        target: String(args.target ?? '').trim()\n      });\n      return ok({ saved: true, entry });"
